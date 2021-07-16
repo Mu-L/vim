@@ -325,7 +325,7 @@ find_help_tags(
     char_u	*s, *d;
     int		i;
     // Specific tags that either have a specific replacement or won't go
-    // throught the generic rules.
+    // through the generic rules.
     static char *(except_tbl[][2]) = {
 	{"*",		"star"},
 	{"g*",		"gstar"},
@@ -381,7 +381,7 @@ find_help_tags(
 	// When the string starting with "expr-" and containing '?' and matches
 	// the table, it is taken literally (but ~ is escaped).  Otherwise '?'
 	// is recognized as a wildcard.
-	for (i = (int)(sizeof(expr_table) / sizeof(char *)); --i >= 0; )
+	for (i = (int)ARRAY_LENGTH(expr_table); --i >= 0; )
 	    if (STRCMP(arg + 5, expr_table[i]) == 0)
 	    {
 		int si = 0, di = 0;
@@ -647,6 +647,8 @@ prepare_help_buffer(void)
 
     // Always set these options after jumping to a help tag, because the
     // user may have an autocommand that gets in the way.
+    // When adding an option here, also update the help file helphelp.txt.
+
     // Accept all ASCII chars for keywords, except ' ', '*', '"', '|', and
     // latin1 word characters (for translated help files).
     // Only set it when needed, buf_init_chartab() is some work.

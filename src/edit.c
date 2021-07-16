@@ -147,6 +147,9 @@ edit(
 #ifdef FEAT_JOB_CHANNEL
     int		cmdchar_todo = cmdchar;
 #endif
+#ifdef FEAT_CONCEAL
+    int		cursor_line_was_concealed;
+#endif
 
     // Remember whether editing was restarted after CTRL-O.
     did_restart_edit = restart_edit;
@@ -196,6 +199,10 @@ edit(
 #endif
 	ins_apply_autocmds(EVENT_INSERTENTER);
 
+	// Check for changed highlighting, e.g. for ModeMsg.
+	if (need_highlight_changed)
+	    highlight_changed();
+
 	// Make sure the cursor didn't move.  Do call check_cursor_col() in
 	// case the text was modified.  Since Insert mode was not started yet
 	// a call to check_cursor_col() may move the cursor, especially with
@@ -218,9 +225,9 @@ edit(
     }
 
 #ifdef FEAT_CONCEAL
-    // Check if the cursor line needs redrawing before changing State.  If
-    // 'concealcursor' is "n" it needs to be redrawn without concealing.
-    conceal_check_cursor_line();
+    // Check if the cursor line was concealed before changing State.
+    cursor_line_was_concealed = curwin->w_p_cole > 0
+						&& conceal_cursor_line(curwin);
 #endif
 
     /*
@@ -278,6 +285,12 @@ edit(
 	State = INSERT;
 
     stop_insert_mode = FALSE;
+
+#ifdef FEAT_CONCEAL
+    // Check if the cursor line needs redrawing after changing State.  If
+    // 'concealcursor' is "n" it needs to be redrawn without concealing.
+    conceal_check_cursor_line(cursor_line_was_concealed);
+#endif
 
     /*
      * Need to recompute the cursor position, it might move when the cursor is
@@ -1586,7 +1599,7 @@ decodeModifyOtherKeys(int c)
     // Recognize:
     // form 0: {lead}{key};{modifier}u
     // form 1: {lead}27;{modifier};{key}~
-    if ((c == CSI || (c == ESC && *p == '[')) && typebuf.tb_len >= 4)
+    if (typebuf.tb_len >= 4 && (c == CSI || (c == ESC && *p == '[')))
     {
 	idx = (*p == '[');
 	if (p[idx] == '2' && p[idx + 1] == '7' && p[idx + 2] == ';')

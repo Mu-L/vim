@@ -21,8 +21,8 @@ typedef struct ucmd
     long	uc_def;		// The default value for a range/count
     int		uc_compl;	// completion type
     cmd_addr_T	uc_addr_type;	// The command's address type
-# ifdef FEAT_EVAL
     sctx_T	uc_script_ctx;	// SCTX where the command was defined
+# ifdef FEAT_EVAL
     char_u	*uc_compl_arg;	// completion argument if any
 # endif
 } ucmd_T;
@@ -339,7 +339,7 @@ get_user_cmd_flags(expand_T *xp UNUSED, int idx)
 	"count", "nargs", "range", "register"
     };
 
-    if (idx >= (int)(sizeof(user_cmd_flags) / sizeof(user_cmd_flags[0])))
+    if (idx >= (int)ARRAY_LENGTH(user_cmd_flags))
 	return NULL;
     return (char_u *)user_cmd_flags[idx];
 }
@@ -352,7 +352,7 @@ get_user_cmd_nargs(expand_T *xp UNUSED, int idx)
 {
     static char *user_cmd_nargs[] = {"0", "1", "*", "?", "+"};
 
-    if (idx >= (int)(sizeof(user_cmd_nargs) / sizeof(user_cmd_nargs[0])))
+    if (idx >= (int)ARRAY_LENGTH(user_cmd_nargs))
 	return NULL;
     return (char_u *)user_cmd_nargs[idx];
 }
@@ -954,8 +954,8 @@ uc_add_command(
     cmd->uc_argt = argt;
     cmd->uc_def = def;
     cmd->uc_compl = compl;
-#ifdef FEAT_EVAL
     cmd->uc_script_ctx = current_sctx;
+#ifdef FEAT_EVAL
     cmd->uc_script_ctx.sc_lnum += SOURCING_LNUM;
     cmd->uc_compl_arg = compl_arg;
 #endif
@@ -1019,20 +1019,22 @@ ex_command(exarg_T *eap)
     // we are listing commands
     p = skipwhite(end);
     if (!has_attr && ends_excmd2(eap->arg, p))
-    {
 	uc_list(name, end - name);
-    }
     else if (!ASCII_ISUPPER(*name))
-    {
 	emsg(_("E183: User defined commands must start with an uppercase letter"));
-	return;
-    }
     else if ((name_len == 1 && *name == 'X')
 	  || (name_len <= 4
 		  && STRNCMP(name, "Next", name_len > 4 ? 4 : name_len) == 0))
-    {
 	emsg(_("E841: Reserved name, cannot be used for user defined command"));
-	return;
+    else if (compl > 0 && (argt & EX_EXTRA) == 0)
+    {
+	// Some plugins rely on silently ignoring the mistake, only make this
+	// an error in Vim9 script.
+	if (in_vim9script())
+	    emsg(_(e_complete_used_without_nargs));
+	else
+	    give_warning_with_source(
+		       (char_u *)_(e_complete_used_without_nargs), TRUE, TRUE);
     }
     else
 	uc_add_command(name, end - name, p, argt, def, flags, compl, compl_arg,
@@ -1573,9 +1575,7 @@ do_ucmd(exarg_T *eap)
     size_t	split_len = 0;
     char_u	*split_buf = NULL;
     ucmd_T	*cmd;
-#ifdef FEAT_EVAL
     sctx_T	save_current_sctx = current_sctx;
-#endif
 
     if (eap->cmdidx == CMD_USER)
 	cmd = USER_CMD(eap->useridx);
@@ -1674,15 +1674,13 @@ do_ucmd(exarg_T *eap)
 	}
     }
 
+    current_sctx.sc_version = cmd->uc_script_ctx.sc_version;
 #ifdef FEAT_EVAL
     current_sctx.sc_sid = cmd->uc_script_ctx.sc_sid;
-    current_sctx.sc_version = cmd->uc_script_ctx.sc_version;
 #endif
     (void)do_cmdline(buf, eap->getline, eap->cookie,
 				   DOCMD_VERBOSE|DOCMD_NOWAIT|DOCMD_KEYTYPED);
-#ifdef FEAT_EVAL
     current_sctx = save_current_sctx;
-#endif
     vim_free(buf);
     vim_free(split_buf);
 }

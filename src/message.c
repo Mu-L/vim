@@ -248,6 +248,13 @@ trunc_string(
     int		i;
     int		n;
 
+    if (*s == NUL)
+    {
+	if (buflen > 0)
+	    *buf = NUL;
+	return;
+    }
+
     if (room_in < 3)
 	room = 0;
     half = room / 2;
@@ -678,6 +685,9 @@ emsg_core(char_u *s)
 	 */
 	if (emsg_silent != 0)
 	{
+#ifdef FEAT_EVAL
+	    ++did_emsg_silent;
+#endif
 	    if (emsg_noredir == 0)
 	    {
 		msg_start();
@@ -1831,23 +1841,37 @@ msg_prt_line(char_u *s, int list)
     int		n;
     int		attr = 0;
     char_u	*trail = NULL;
+    char_u	*lead = NULL;
     int		l;
     char_u	buf[MB_MAXBYTES + 1];
 
     if (curwin->w_p_list)
 	list = TRUE;
 
-    // find start of trailing whitespace
-    if (list && lcs_trail)
+    if (list)
     {
-	trail = s + STRLEN(s);
-	while (trail > s && VIM_ISWHITE(trail[-1]))
-	    --trail;
+	// find start of trailing whitespace
+	if (curwin->w_lcs_chars.trail)
+	{
+	    trail = s + STRLEN(s);
+	    while (trail > s && VIM_ISWHITE(trail[-1]))
+		--trail;
+	}
+	// find end of leading whitespace
+	if (curwin->w_lcs_chars.lead)
+	{
+	    lead = s;
+	    while (VIM_ISWHITE(lead[0]))
+		lead++;
+	    // in a line full of spaces all of them are treated as trailing
+	    if (*lead == NUL)
+		lead = NULL;
+	}
     }
 
     // output a space for an empty line, otherwise the line will be
     // overwritten
-    if (*s == NUL && !(list && lcs_eol != NUL))
+    if (*s == NUL && !(list && curwin->w_lcs_chars.eol != NUL))
 	msg_putchar(' ');
 
     while (!got_int)
@@ -1869,11 +1893,11 @@ msg_prt_line(char_u *s, int list)
 	    {
 		STRCPY(buf, "?");
 	    }
-	    else if (lcs_nbsp != NUL && list
+	    else if (curwin->w_lcs_chars.nbsp != NUL && list
 		    && (mb_ptr2char(s) == 160
 			|| mb_ptr2char(s) == 0x202f))
 	    {
-		mb_char2bytes(lcs_nbsp, buf);
+		mb_char2bytes(curwin->w_lcs_chars.nbsp, buf);
 		buf[(*mb_ptr2len)(buf)] = NUL;
 	    }
 	    else
@@ -1889,7 +1913,7 @@ msg_prt_line(char_u *s, int list)
 	{
 	    attr = 0;
 	    c = *s++;
-	    if (c == TAB && (!list || lcs_tab1))
+	    if (c == TAB && (!list || curwin->w_lcs_chars.tab1))
 	    {
 		// tab amount depends on current column
 #ifdef FEAT_VARTABS
@@ -1906,24 +1930,26 @@ msg_prt_line(char_u *s, int list)
 		}
 		else
 		{
-		    c = (n_extra == 0 && lcs_tab3) ? lcs_tab3 : lcs_tab1;
-		    c_extra = lcs_tab2;
-		    c_final = lcs_tab3;
+		    c = (n_extra == 0 && curwin->w_lcs_chars.tab3)
+						? curwin->w_lcs_chars.tab3
+						: curwin->w_lcs_chars.tab1;
+		    c_extra = curwin->w_lcs_chars.tab2;
+		    c_final = curwin->w_lcs_chars.tab3;
 		    attr = HL_ATTR(HLF_8);
 		}
 	    }
-	    else if (c == 160 && list && lcs_nbsp != NUL)
+	    else if (c == 160 && list && curwin->w_lcs_chars.nbsp != NUL)
 	    {
-		c = lcs_nbsp;
+		c = curwin->w_lcs_chars.nbsp;
 		attr = HL_ATTR(HLF_8);
 	    }
-	    else if (c == NUL && list && lcs_eol != NUL)
+	    else if (c == NUL && list && curwin->w_lcs_chars.eol != NUL)
 	    {
 		p_extra = (char_u *)"";
 		c_extra = NUL;
 		c_final = NUL;
 		n_extra = 1;
-		c = lcs_eol;
+		c = curwin->w_lcs_chars.eol;
 		attr = HL_ATTR(HLF_AT);
 		--s;
 	    }
@@ -1938,14 +1964,19 @@ msg_prt_line(char_u *s, int list)
 		// the same in plain text.
 		attr = HL_ATTR(HLF_8);
 	    }
-	    else if (c == ' ' && trail != NULL && s > trail)
+	    else if (c == ' ' && lead != NULL && s <= lead)
 	    {
-		c = lcs_trail;
+		c = curwin->w_lcs_chars.lead;
 		attr = HL_ATTR(HLF_8);
 	    }
-	    else if (c == ' ' && list && lcs_space != NUL)
+	    else if (c == ' ' && trail != NULL && s > trail)
 	    {
-		c = lcs_space;
+		c = curwin->w_lcs_chars.trail;
+		attr = HL_ATTR(HLF_8);
+	    }
+	    else if (c == ' ' && list && curwin->w_lcs_chars.space != NUL)
+	    {
+		c = curwin->w_lcs_chars.space;
 		attr = HL_ATTR(HLF_8);
 	    }
 	}
@@ -2720,19 +2751,21 @@ msg_puts_printf(char_u *str, int maxlen)
 
     if (*p != NUL && !(silent_mode && p_verbose == 0))
     {
-	int c = -1;
+	char_u *tofree = NULL;
 
 	if (maxlen > 0 && STRLEN(p) > (size_t)maxlen)
 	{
-	    c = p[maxlen];
-	    p[maxlen] = 0;
+	    tofree = vim_strnsave(p, (size_t)maxlen);
+	    p = tofree;
 	}
-	if (info_message)
-	    mch_msg((char *)p);
-	else
-	    mch_errmsg((char *)p);
-	if (c != -1)
-	    p[maxlen] = c;
+	if (p != NULL)
+	{
+	    if (info_message)
+		mch_msg((char *)p);
+	    else
+		mch_errmsg((char *)p);
+	    vim_free(tofree);
+	}
     }
 
     msg_didout = TRUE;	    // assume that line is not empty
@@ -3581,6 +3614,12 @@ verbose_open(void)
     void
 give_warning(char_u *message, int hl)
 {
+    give_warning_with_source(message, hl, FALSE);
+}
+
+    void
+give_warning_with_source(char_u *message, int hl, int with_source)
+{
     // Don't do this for ":silent".
     if (msg_silent != 0)
 	return;
@@ -3596,8 +3635,21 @@ give_warning(char_u *message, int hl)
 	keep_msg_attr = HL_ATTR(HLF_W);
     else
 	keep_msg_attr = 0;
-    if (msg_attr((char *)message, keep_msg_attr) && msg_scrolled == 0)
+
+    if (with_source)
+    {
+	// Do what msg() does, but with a column offset if the warning should
+	// be after the mode message.
+	msg_start();
+	msg_source(HL_ATTR(HLF_W));
+	msg_puts(" ");
+	msg_puts_attr((char *)message, HL_ATTR(HLF_W) | MSG_HIST);
+	msg_clr_eos();
+	(void)msg_end();
+    }
+    else if (msg_attr((char *)message, keep_msg_attr) && msg_scrolled == 0)
 	set_keep_msg(message, keep_msg_attr);
+
     msg_didout = FALSE;	    // overwrite this message
     msg_nowait = TRUE;	    // don't wait for this message
     msg_col = 0;

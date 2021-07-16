@@ -718,7 +718,7 @@ cin_isinit(void)
     {
 	int i, l;
 
-	for (i = 0; i < (int)(sizeof(skip) / sizeof(char *)); ++i)
+	for (i = 0; i < (int)ARRAY_LENGTH(skip); ++i)
 	{
 	    l = (int)strlen(skip[i]);
 	    if (cin_starts_with(s, skip[i]))
@@ -2121,7 +2121,7 @@ get_c_indent(void)
     }
 
     // #defines and so on go at the left when included in 'cinkeys',
-    // exluding pragmas when customized in 'cinoptions'
+    // excluding pragmas when customized in 'cinoptions'
     if (*theline == '#' && (*linecopy == '#' || in_cinkeys('#', ' ', TRUE)))
     {
 	char_u *directive = skipwhite(theline + 1);

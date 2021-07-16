@@ -245,6 +245,25 @@ func Test_prop_find_smaller_len_than_match_col()
   call prop_type_delete('test')
 endfunc
 
+func Test_prop_find_with_both_option_enabled()
+  " Initialize
+  new
+  call AddPropTypes()
+  call SetupPropsInFirstLine()
+  let props = Get_expected_props()->map({_, v -> extend(v, {'lnum': 1})})
+  " Test
+  call assert_fails("call prop_find({'both': 1})", 'E968:')
+  call assert_fails("call prop_find({'id': 11, 'both': 1})", 'E860:')
+  call assert_fails("call prop_find({'type': 'three', 'both': 1})", 'E860:')
+  call assert_equal({}, prop_find({'id': 11, 'type': 'three', 'both': 1}))
+  call assert_equal({}, prop_find({'id': 130000, 'type': 'one', 'both': 1}))
+  call assert_equal(props[2], prop_find({'id': 12, 'type': 'two', 'both': 1}))
+  call assert_equal(props[0], prop_find({'id': 14, 'type': 'whole', 'both': 1}))
+  " Clean up
+  call DeletePropTypes()
+  bwipe!
+endfunc
+
 func Test_prop_add()
   new
   call AddPropTypes()
@@ -771,6 +790,36 @@ func Test_prop_byte2line()
   call prop_type_delete('prop')
 endfunc
 
+func Test_prop_goto_byte()
+  new
+  call setline(1, '')
+  call setline(2, 'two three')
+  call setline(3, '')
+  call setline(4, 'four five')
+
+  call prop_type_add('testprop', {'highlight': 'Directory'})
+  call search('^two')
+  call prop_add(line('.'), col('.'), {
+        \ 'length': len('two'),
+        \ 'type':   'testprop'
+        \ })
+
+  call search('two \zsthree')
+  let expected_pos = line2byte(line('.')) + col('.') - 1
+  exe expected_pos .. 'goto'
+  let actual_pos = line2byte(line('.')) + col('.') - 1
+  eval actual_pos->assert_equal(expected_pos)
+
+  call search('four \zsfive')
+  let expected_pos = line2byte(line('.')) + col('.') - 1
+  exe expected_pos .. 'goto'
+  let actual_pos = line2byte(line('.')) + col('.') - 1
+  eval actual_pos->assert_equal(expected_pos)
+
+  call prop_type_delete('testprop')
+  bwipe!
+endfunc
+
 func Test_prop_undo()
   new
   call prop_type_add('comment', {'highlight': 'Directory'})
@@ -1017,6 +1066,30 @@ func Test_textprop_after_tab()
   " clean up
   call StopVimInTerminal(buf)
   call delete('XtestPropTab')
+endfunc
+
+func Test_textprop_nowrap_scrolled()
+  CheckScreendump
+
+  let lines =<< trim END
+       vim9script
+       set nowrap
+       setline(1, 'The number 123 is smaller than 4567.' .. repeat('X', &columns))
+       prop_type_add('number', {'highlight': 'ErrorMsg'})
+       prop_add(1, 12, {'length': 3, 'type': 'number'})
+       prop_add(1, 32, {'length': 4, 'type': 'number'})
+       feedkeys('gg20zl', 'nxt')
+  END
+  call writefile(lines, 'XtestNowrap')
+  let buf = RunVimInTerminal('-S XtestNowrap', {'rows': 6})
+  call VerifyScreenDump(buf, 'Test_textprop_nowrap_01', {})
+
+  call term_sendkeys(buf, "$")
+  call VerifyScreenDump(buf, 'Test_textprop_nowrap_02', {})
+
+  " clean up
+  call StopVimInTerminal(buf)
+  call delete('XtestNowrap')
 endfunc
 
 func Test_textprop_with_syntax()
@@ -1267,7 +1340,7 @@ endfunc
 func Test_prop_func_invalid_args()
   call assert_fails('call prop_clear(1, 2, [])', 'E715:')
   call assert_fails('call prop_clear(-1, 2)', 'E16:')
-  call assert_fails('call prop_find(test_null_dict())', 'E474:')
+  call assert_fails('call prop_find(test_null_dict())', 'E715:')
   call assert_fails('call prop_find({"bufnr" : []})', 'E730:')
   call assert_fails('call prop_find({})', 'E968:')
   call assert_fails('call prop_find({}, "x")', 'E474:')
@@ -1284,6 +1357,25 @@ func Test_prop_func_invalid_args()
   call assert_fails("call prop_type_get([])", 'E730:')
   call assert_fails("call prop_type_get('', [])", 'E474:')
   call assert_fails("call prop_type_list([])", 'E715:')
+  call assert_fails("call prop_type_add('yyy', 'not_a_dict')", 'E715:')
+  call assert_fails("call prop_add(1, 5, {'type':'missing_type', 'length':1})", 'E971:')
+  call assert_fails("call prop_add(1, 5, {'type': ''})", 'E971:')
+  call assert_fails('call prop_add(1, 1, 0)', 'E715:')
+
+  new
+  call setline(1, ['first', 'second'])
+  call prop_type_add('xxx', {})
+
+  call assert_fails("call prop_type_add('xxx', {})", 'E969:')
+  call assert_fails("call prop_add(2, 0, {'type': 'xxx'})", 'E964:')
+  call assert_fails("call prop_add(2, 3, {'type': 'xxx', 'end_lnum':1})", 'E475:')
+  call assert_fails("call prop_add(2, 3, {'type': 'xxx', 'end_lnum':3})", 'E966:')
+  call assert_fails("call prop_add(2, 3, {'type': 'xxx', 'length':-1})", 'E475:')
+  call assert_fails("call prop_add(2, 3, {'type': 'xxx', 'end_col':0})", 'E475:')
+  call assert_fails("call prop_add(2, 3, {'length':1})", 'E965:')
+
+  call prop_type_delete('xxx')
+  bwipe!
 endfunc
 
 func Test_prop_split_join()
@@ -1357,5 +1449,66 @@ func Test_prop_block_insert()
   bwipe!
   call prop_type_delete('test')
 endfunc
+
+" this was causing an ml_get error because w_botline was wrong
+func Test_prop_one_line_window()
+  enew
+  call range(2)->setline(1)
+  call prop_type_add('testprop', {})
+  call prop_add(1, 1, {'type': 'testprop'})
+  call popup_create('popup', {'textprop': 'testprop'})
+  $
+  new
+  wincmd _
+  call feedkeys("\r", 'xt')
+  redraw
+
+  call popup_clear()
+  call prop_type_delete('testprop')
+  close
+  bwipe!
+endfunc
+
+" This was calling ml_append_int() and copy a text property from a previous
+" line at the wrong moment.  Exact text length matters.
+def Test_prop_splits_data_block()
+  new
+  var lines: list<string> = [repeat('x', 35)]->repeat(41)
+			+ [repeat('!', 35)]
+			+ [repeat('x', 35)]->repeat(56)
+  lines->setline(1)
+  prop_type_add('someprop', {highlight: 'ErrorMsg'})
+  prop_add(1, 27, {end_lnum: 1, end_col: 70, type: 'someprop'})
+  prop_remove({type: 'someprop'}, 1)
+  prop_add(35, 22, {end_lnum: 43, end_col: 43, type: 'someprop'})
+  prop_remove({type: 'someprop'}, 35, 43)
+  assert_equal([], prop_list(42))
+
+  bwipe!
+  prop_type_delete('someprop')
+enddef
+
+" This was calling ml_delete_int() and try to change text properties.
+def Test_prop_add_delete_line()
+  new
+  var a = 10
+  var b = 20
+  repeat([''], a)->append('$')
+  prop_type_add('Test', {highlight: 'ErrorMsg'})
+  for lnum in range(1, a)
+    for col in range(1, b)
+      prop_add(1, 1, {end_lnum: lnum, end_col: col, type: 'Test'})
+    endfor
+  endfor
+
+  # check deleting lines is OK
+  :5del
+  :1del
+  :$del
+
+  prop_type_delete('Test')
+  bwipe!
+enddef
+
 
 " vim: shiftwidth=2 sts=2 expandtab

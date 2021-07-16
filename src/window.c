@@ -130,7 +130,7 @@ do_window(
     do { \
 	if (cmdwin_type != 0) \
 	{ \
-	    emsg(_(e_cmdwin)); \
+	    emsg(_(e_invalid_in_cmdline_window)); \
 	    return; \
 	} \
     } while (0)
@@ -187,7 +187,7 @@ do_window(
 					? curwin->w_alt_fnum : Prenum) == NULL)
 		{
 		    if (Prenum == 0)
-			emsg(_(e_noalt));
+			emsg(_(e_no_alternate_file));
 		    else
 			semsg(_("E92: Buffer %ld not found"), Prenum);
 		    break;
@@ -750,11 +750,10 @@ cmd_with_count(
     size_t	bufsize,
     long	Prenum)
 {
-    size_t	len = STRLEN(cmd);
-
-    STRCPY(bufp, cmd);
     if (Prenum > 0)
-	vim_snprintf((char *)bufp + len, bufsize - len, "%ld", Prenum);
+	vim_snprintf((char *)bufp, bufsize, "%s %ld", cmd, Prenum);
+    else
+	STRCPY(bufp, cmd);
 }
 
 /*
@@ -767,6 +766,11 @@ check_split_disallowed()
     if (split_disallowed > 0)
     {
 	emsg(_("E242: Can't split a window while closing another"));
+	return FAIL;
+    }
+    if (curwin->w_buffer->b_locked_split)
+    {
+	emsg(_(e_cannot_split_window_when_closing_buffer));
 	return FAIL;
     }
     return OK;
@@ -793,6 +797,9 @@ win_split(int size, int flags)
     if (ERROR_IF_ANY_POPUP_WINDOW)
 	return FAIL;
 
+    if (check_split_disallowed() == FAIL)
+	return FAIL;
+
     // When the ":tab" modifier was used open a new tab page instead.
     if (may_open_tabpage() == OK)
 	return OK;
@@ -804,8 +811,6 @@ win_split(int size, int flags)
 	emsg(_("E442: Can't split topleft and botright at the same time"));
 	return FAIL;
     }
-    if (check_split_disallowed() == FAIL)
-	return FAIL;
 
     // When creating the help window make a snapshot of the window layout.
     // Otherwise clear the snapshot, it's now invalid.
@@ -5052,8 +5057,9 @@ win_free(
 
 		// If there already is an entry with "wi_win" set to NULL it
 		// must be removed, it would never be used.
+		// Skip "wip" itself, otherwise Coverity complains.
 		for (wip2 = buf->b_wininfo; wip2 != NULL; wip2 = wip2->wi_next)
-		    if (wip2->wi_win == NULL)
+		    if (wip2 != wip && wip2->wi_win == NULL)
 		    {
 			if (wip2->wi_next != NULL)
 			    wip2->wi_next->wi_prev = wip2->wi_prev;
@@ -5687,6 +5693,8 @@ win_setwidth_win(int width, win_T *wp)
 	if (width == 0)
 	    width = 1;
     }
+    else if (width < 0)
+	width = 0;
 
     frame_setwidth(wp->w_frame, width + wp->w_vsep_width);
 
@@ -5853,7 +5861,7 @@ win_setminheight(void)
     while (p_wmh > 0)
     {
 	room = Rows - p_ch;
-	needed = frame_minheight(topframe, NULL);
+	needed = min_rows() - 1;  // 1 was added for the cmdline
 	if (room >= needed)
 	    break;
 	--p_wmh;
@@ -6325,9 +6333,21 @@ win_new_width(win_T *wp, int width)
     void
 win_comp_scroll(win_T *wp)
 {
+#if defined(FEAT_EVAL)
+    int old_w_p_scr = wp->w_p_scr;
+#endif
+
     wp->w_p_scr = ((unsigned)wp->w_height >> 1);
     if (wp->w_p_scr == 0)
 	wp->w_p_scr = 1;
+#if defined(FEAT_EVAL)
+    if (wp->w_p_scr != old_w_p_scr)
+    {
+	// Used by "verbose set scroll".
+	wp->w_p_script_ctx[WV_SCROLL].sc_sid = SID_WINLAYOUT;
+	wp->w_p_script_ctx[WV_SCROLL].sc_lnum = 0;
+    }
+#endif
 }
 
 /*

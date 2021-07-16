@@ -638,7 +638,7 @@ static struct specialkey
     {0,		    0, 0}
 };
 
-#define NUM_SPECIAL_KEYS    (sizeof(special_keys)/sizeof(special_keys[0]))
+#define NUM_SPECIAL_KEYS    ARRAY_LENGTH(special_keys)
 
 // ---------------- VimApp ----------------
 
@@ -3411,7 +3411,7 @@ gui_mch_exit(int vim_exitcode)
 	thread_id tid = gui.vimWindow->Thread();
 	gui.vimWindow->Lock();
 	gui.vimWindow->Quit();
-	// Wait until it is truely gone
+	// Wait until it is truly gone
 	int32 exitcode;
 	wait_for_thread(tid, &exitcode);
     }

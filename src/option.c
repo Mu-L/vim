@@ -145,7 +145,7 @@ set_init_1(int clean_arg)
 	opt_idx = findoption((char_u *)"backupskip");
 
 	ga_init2(&ga, 1, 100);
-	for (n = 0; n < (long)(sizeof(names) / sizeof(char *)); ++n)
+	for (n = 0; n < (long)ARRAY_LENGTH(names); ++n)
 	{
 	    mustfree = FALSE;
 # ifdef UNIX
@@ -430,14 +430,21 @@ set_init_1(int clean_arg)
 #  endif
 # endif
 
+# ifdef MSWIN
+    // MS-Windows has builtin support for conversion to and from Unicode, using
+    // "utf-8" for 'encoding' should work best for most users.
+    p = vim_strsave((char_u *)ENC_DFLT);
+# else
     // enc_locale() will try to find the encoding of the current locale.
+    // This works best for properly configured systems, old and new.
     p = enc_locale();
+# endif
     if (p != NULL)
     {
 	char_u *save_enc;
 
 	// Try setting 'encoding' and check if the value is valid.
-	// If not, go back to the default "latin1".
+	// If not, go back to the default encoding.
 	save_enc = p_enc;
 	p_enc = p;
 	if (STRCMP(p_enc, "gb18030") == 0)
@@ -528,6 +535,19 @@ set_init_1(int clean_arg)
 #endif
 }
 
+static char_u *fencs_utf8_default = (char_u *)"ucs-bom,utf-8,default,latin1";
+
+/*
+ * Set the "fileencodings" option to the default value for when 'encoding' is
+ * utf-8.
+ */
+    void
+set_fencs_unicode()
+{
+    set_string_option_direct((char_u *)"fencs", -1, fencs_utf8_default,
+								  OPT_FREE, 0);
+}
+
 /*
  * Set an option to its default value.
  * This does not take care of side effects!
@@ -551,9 +571,12 @@ set_option_default(
 	dvi = ((flags & P_VI_DEF) || compatible) ? VI_DEFAULT : VIM_DEFAULT;
 	if (flags & P_STRING)
 	{
+	    // 'fencs' default value depends on 'encoding'
+	    if (options[opt_idx].var == (char_u *)&p_fencs && enc_utf8)
+		set_fencs_unicode();
 	    // Use set_string_option_direct() for local options to handle
 	    // freeing and allocating the value.
-	    if (options[opt_idx].indir != PV_NONE)
+	    else if (options[opt_idx].indir != PV_NONE)
 		set_string_option_direct(NULL, opt_idx,
 				 options[opt_idx].def_val[dvi], opt_flags, 0);
 	    else
@@ -909,8 +932,29 @@ set_init_3(void)
 		options[idx_srr].def_val[VI_DEFAULT] = p_srr;
 	    }
 	}
+# ifdef MSWIN
+	// Windows PowerShell output is UTF-16 with BOM so re-encode to the
+	// current codepage.
+	else if (   fnamecmp(p, "powershell") == 0
+		    || fnamecmp(p, "powershell.exe") == 0
+		)
+	{
+# if defined(FEAT_QUICKFIX)
+		if (do_sp)
+		{
+		    p_sp = (char_u *)"2>&1 | Out-File -Encoding default";
+		    options[idx_sp].def_val[VI_DEFAULT] = p_sp;
+		}
+# endif
+		if (do_srr)
+		{
+		    p_srr = (char_u *)"2>&1 | Out-File -Encoding default";
+		    options[idx_srr].def_val[VI_DEFAULT] = p_srr;
+		}
+	}
+#endif
 	else
-	    // Always use bourne shell style redirection if we reach this
+	    // Always use POSIX shell style redirection if we reach this
 	    if (       fnamecmp(p, "sh") == 0
 		    || fnamecmp(p, "ksh") == 0
 		    || fnamecmp(p, "mksh") == 0
@@ -919,6 +963,9 @@ set_init_3(void)
 		    || fnamecmp(p, "zsh-beta") == 0
 		    || fnamecmp(p, "bash") == 0
 		    || fnamecmp(p, "fish") == 0
+		    || fnamecmp(p, "ash") == 0
+		    || fnamecmp(p, "dash") == 0
+		    || fnamecmp(p, "pwsh") == 0
 # ifdef MSWIN
 		    || fnamecmp(p, "cmd") == 0
 		    || fnamecmp(p, "sh.exe") == 0
@@ -929,6 +976,8 @@ set_init_3(void)
 		    || fnamecmp(p, "zsh-beta.exe") == 0
 		    || fnamecmp(p, "bash.exe") == 0
 		    || fnamecmp(p, "cmd.exe") == 0
+		    || fnamecmp(p, "dash.exe") == 0
+		    || fnamecmp(p, "pwsh.exe") == 0
 # endif
 		    )
 	    {
@@ -938,7 +987,10 @@ set_init_3(void)
 #  ifdef MSWIN
 		    p_sp = (char_u *)">%s 2>&1";
 #  else
-		    p_sp = (char_u *)"2>&1| tee";
+		    if (fnamecmp(p, "pwsh") == 0)
+			p_sp = (char_u *)">%s 2>&1";
+		    else
+			p_sp = (char_u *)"2>&1| tee";
 #  endif
 		    options[idx_sp].def_val[VI_DEFAULT] = p_sp;
 		}
@@ -958,11 +1010,36 @@ set_init_3(void)
      * Set 'shellcmdflag', 'shellxquote', and 'shellquote' depending on the
      * 'shell' option.
      * This is done after other initializations, where 'shell' might have been
-     * set, but only if they have not been set before.  Default for p_shcf is
-     * "/c", for p_shq is "".  For "sh" like  shells it is changed here to
-     * "-c" and "\"".  And for Win32 we need to set p_sxq instead.
+     * set, but only if they have not been set before.
+     * Default values depend on shell (cmd.exe is default shell):
+     *
+     *			    p_shcf	p_sxq
+     * cmd.exe          -   "/c"	"("
+     * powershell.exe   -   "-Command"	"\""
+     * pwsh.exe		-   "-c"	"\""
+     * "sh" like shells -   "-c"	"\""
+     *
+     * For Win32 p_sxq is set instead of p_shq to include shell redirection.
      */
-    if (strstr((char *)gettail(p_sh), "sh") != NULL)
+    if (strstr((char *)gettail(p_sh), "powershell") != NULL)
+    {
+	int	idx_opt;
+
+	idx_opt = findoption((char_u *)"shcf");
+	if (idx_opt >= 0 && !(options[idx_opt].flags & P_WAS_SET))
+	{
+	    p_shcf = (char_u*)"-Command";
+	    options[idx_opt].def_val[VI_DEFAULT] = p_shcf;
+	}
+
+	idx_opt = findoption((char_u *)"sxq");
+	if (idx_opt >= 0 && !(options[idx_opt].flags & P_WAS_SET))
+	{
+	    p_sxq = (char_u*)"\"";
+	    options[idx_opt].def_val[VI_DEFAULT] = p_sxq;
+	}
+    }
+    else if (strstr((char *)gettail(p_sh), "sh") != NULL)
     {
 	int	idx3;
 
@@ -1153,9 +1230,10 @@ ex_set(exarg_T *eap)
  */
     int
 do_set(
-    char_u	*arg,		// option string (may be written to!)
+    char_u	*arg_start,	// option string (may be written to!)
     int		opt_flags)
 {
+    char_u	*arg = arg_start;
     int		opt_idx;
     char	*errmsg;
     char	errbuf[80];
@@ -1280,9 +1358,25 @@ do_set(
 	    // remember character after option name
 	    afterchar = arg[len];
 
-	    // skip white space, allow ":set ai  ?"
-	    while (VIM_ISWHITE(arg[len]))
-		++len;
+	    if (in_vim9script())
+	    {
+		char_u *p = skipwhite(arg + len);
+
+		// disallow white space before =val, +=val, -=val, ^=val
+		if (p > arg + len && (p[0] == '='
+			|| (vim_strchr((char_u *)"+-^", p[0]) != NULL
+							      && p[1] == '=')))
+		{
+		    errmsg = e_no_white_space_allowed_between_option_and;
+		    arg = p;
+		    startarg = p;
+		    goto skip;
+		}
+	    }
+	    else
+		// skip white space, allow ":set ai  ?", ":set hlsearch  !"
+		while (VIM_ISWHITE(arg[len]))
+		    ++len;
 
 	    adding = FALSE;
 	    prepending = FALSE;
@@ -1309,7 +1403,11 @@ do_set(
 
 	    if (opt_idx == -1 && key == 0)	// found a mismatch: skip
 	    {
-		errmsg = N_("E518: Unknown option");
+		if (in_vim9script() && arg > arg_start
+				  && vim_strchr((char_u *)"!&<", *arg) != NULL)
+		    errmsg = e_no_white_space_allowed_between_option_and;
+		else
+		    errmsg = N_("E518: Unknown option");
 		goto skip;
 	    }
 
@@ -1674,6 +1772,8 @@ do_set(
 #endif
 				    newval = term_bg_default();
 			    }
+			    else if ((char_u **)varp == &p_fencs && enc_utf8)
+				newval = fencs_utf8_default;
 
 			    // expand environment variables and ~ (since the
 			    // default value was already expanded, only
@@ -2337,9 +2437,11 @@ didset_options2(void)
     // Parse default for 'wildmode'
     check_opt_wim();
 
-    (void)set_chars_option(&p_lcs);
+    // Parse default for 'listchars'.
+    (void)set_chars_option(curwin, &curwin->w_p_lcs);
+
     // Parse default for 'fillchars'.
-    (void)set_chars_option(&p_fcs);
+    (void)set_chars_option(curwin, &p_fcs);
 
 #ifdef FEAT_CLIPBOARD
     // Parse default for 'clipboard'
@@ -2419,6 +2521,8 @@ was_set_insecurely(char_u *opt, int opt_flags)
 /*
  * Get a pointer to the flags used for the P_INSECURE flag of option
  * "opt_idx".  For some local options a local flags field is used.
+ * NOTE: Caller must make sure that "curwin" is set to the window from which
+ * the option is used.
  */
     static long_u *
 insecure_flag(int opt_idx, int opt_flags)
@@ -2680,6 +2784,10 @@ set_bool_option(
 				|| (opt_flags & OPT_GLOBAL) || opt_flags == 0)
 			&& !curbufIsChanged() && curbuf->b_ml.ml_mfp != NULL)
 		{
+#ifdef FEAT_CRYPT
+		    if (crypt_get_method_nr(curbuf) == CRYPT_M_SOD)
+			continue;
+#endif
 		    u_compute_hash(hash);
 		    u_read_undo(NULL, hash, curbuf->b_fname);
 		}
@@ -3172,7 +3280,9 @@ set_bool_option(
     if (curwin->w_curswant != MAXCOL
 		     && (options[opt_idx].flags & (P_CURSWANT | P_RALL)) != 0)
 	curwin->w_set_curswant = TRUE;
-    check_redraw(options[opt_idx].flags);
+
+    if ((opt_flags & OPT_NO_REDRAW) == 0)
+	check_redraw(options[opt_idx].flags);
 
     return NULL;
 }
@@ -3188,8 +3298,8 @@ set_num_option(
     long	value,			// new value
     char	*errbuf,		// buffer for error messages
     size_t	errbuflen,		// length of "errbuf"
-    int		opt_flags)		// OPT_LOCAL, OPT_GLOBAL and
-					// OPT_MODELINE
+    int		opt_flags)		// OPT_LOCAL, OPT_GLOBAL,
+					// OPT_MODELINE, etc.
 {
     char	*errmsg = NULL;
     long	old_value = *(long *)varp;
@@ -3730,7 +3840,8 @@ set_num_option(
     if (curwin->w_curswant != MAXCOL
 		     && (options[opt_idx].flags & (P_CURSWANT | P_RALL)) != 0)
 	curwin->w_set_curswant = TRUE;
-    check_redraw(options[opt_idx].flags);
+    if ((opt_flags & OPT_NO_REDRAW) == 0)
+	check_redraw(options[opt_idx].flags);
 
     return errmsg;
 }
@@ -3834,13 +3945,15 @@ findoption(char_u *arg)
  * Get the value for an option.
  *
  * Returns:
- * Number or Toggle option: 1, *numval gets value.
- *	     String option: 0, *stringval gets allocated string.
- * Hidden Number or Toggle option: -1.
- *	     hidden String option: -2.
- *		   unknown option: -3.
+ * Number option: gov_number, *numval gets value.
+ * Toggle option: gov_bool,   *numval gets value.
+ * String option: gov_string, *stringval gets allocated string.
+ * Hidden Number option: gov_hidden_number.
+ * Hidden Toggle option: gov_hidden_bool.
+ * Hidden String option: gov_hidden_string.
+ * Unknown option: gov_unknown.
  */
-    int
+    getoption_T
 get_option_value(
     char_u	*name,
     long	*numval,
@@ -3851,16 +3964,17 @@ get_option_value(
     char_u	*varp;
 
     opt_idx = findoption(name);
-    if (opt_idx < 0)		    // unknown option
+    if (opt_idx < 0)		    // option not in the table
     {
 	int key;
 
 	if (STRLEN(name) == 4 && name[0] == 't' && name[1] == '_'
-		&& (key = find_key_option(name, FALSE)) != 0)
+				  && (key = find_key_option(name, FALSE)) != 0)
 	{
 	    char_u key_name[2];
 	    char_u *p;
 
+	    // check for a terminal option
 	    if (key < 0)
 	    {
 		key_name[0] = KEY2TERMCAP0(key);
@@ -3876,10 +3990,10 @@ get_option_value(
 	    {
 		if (stringval != NULL)
 		    *stringval = vim_strsave(p);
-		return 0;
+		return gov_string;
 	    }
 	}
-	return -3;
+	return gov_unknown;
     }
 
     varp = get_varp_scope(&(options[opt_idx]), opt_flags);
@@ -3887,7 +4001,7 @@ get_option_value(
     if (options[opt_idx].flags & P_STRING)
     {
 	if (varp == NULL)		    // hidden option
-	    return -2;
+	    return gov_hidden_string;
 	if (stringval != NULL)
 	{
 #ifdef FEAT_CRYPT
@@ -3899,11 +4013,12 @@ get_option_value(
 #endif
 		*stringval = vim_strsave(*(char_u **)(varp));
 	}
-	return 0;
+	return gov_string;
     }
 
     if (varp == NULL)		    // hidden option
-	return -1;
+	return (options[opt_idx].flags & P_NUM)
+					 ? gov_hidden_number : gov_hidden_bool;
     if (options[opt_idx].flags & P_NUM)
 	*numval = *(long *)varp;
     else
@@ -3915,7 +4030,7 @@ get_option_value(
 	else
 	    *numval = (long) *(int *)varp;
     }
-    return 1;
+    return (options[opt_idx].flags & P_NUM) ? gov_number : gov_bool;
 }
 #endif
 
@@ -4604,6 +4719,10 @@ makeset(FILE *fd, int opt_flags, int local_only)
 	    if ((opt_flags & OPT_GLOBAL) && optval_default(p, varp, p_cp))
 		continue;
 
+	    if ((opt_flags & OPT_SKIPRTP) && (p->var == (char_u *)&p_rtp
+						 || p->var == (char_u *)&p_pp))
+		continue;
+
 	    round = 2;
 	    if (p->indir != PV_NONE)
 	    {
@@ -5057,6 +5176,11 @@ unset_global_local_option(char_u *name, void *from)
 	case PV_MENC:
 	    clear_string_option(&buf->b_p_menc);
 	    break;
+	case PV_LCS:
+	    clear_string_option(&((win_T *)from)->w_p_lcs);
+	    set_chars_option((win_T *)from, &((win_T *)from)->w_p_lcs);
+	    redraw_later(NOT_VALID);
+	    break;
     }
 }
 #endif
@@ -5115,6 +5239,8 @@ get_varp_scope(struct vimoption *p, int opt_flags)
 #endif
 	    case PV_BKC:  return (char_u *)&(curbuf->b_p_bkc);
 	    case PV_MENC: return (char_u *)&(curbuf->b_p_menc);
+	    case PV_LCS: return (char_u *)&(curwin->w_p_lcs);
+
 	}
 	return NULL; // "cannot happen"
     }
@@ -5212,6 +5338,8 @@ get_varp(struct vimoption *p)
 	case PV_ARAB:	return (char_u *)&(curwin->w_p_arab);
 #endif
 	case PV_LIST:	return (char_u *)&(curwin->w_p_list);
+	case PV_LCS:	return *curwin->w_p_lcs != NUL
+				    ? (char_u *)&(curwin->w_p_lcs) : p->var;
 #ifdef FEAT_SPELL
 	case PV_SPELL:	return (char_u *)&(curwin->w_p_spell);
 #endif
@@ -5439,6 +5567,7 @@ after_copy_winopt(win_T *wp UNUSED)
     fill_culopt_flags(NULL, wp);
     check_colorcolumn(wp);
 #endif
+    set_chars_option(wp, &wp->w_p_lcs);
 }
 
 /*
@@ -5454,6 +5583,7 @@ copy_winopt(winopt_T *from, winopt_T *to)
     to->wo_arab = from->wo_arab;
 #endif
     to->wo_list = from->wo_list;
+    to->wo_lcs = vim_strsave(from->wo_lcs);
     to->wo_nu = from->wo_nu;
     to->wo_rnu = from->wo_rnu;
 #ifdef FEAT_LINEBREAK
@@ -5588,6 +5718,7 @@ check_winopt(winopt_T *wop UNUSED)
     check_string_option(&wop->wo_briopt);
 #endif
     check_string_option(&wop->wo_wcr);
+    check_string_option(&wop->wo_lcs);
 }
 
 /*
@@ -5633,6 +5764,7 @@ clear_winopt(winopt_T *wop UNUSED)
     clear_string_option(&wop->wo_twk);
     clear_string_option(&wop->wo_tws);
 #endif
+    clear_string_option(&wop->wo_lcs);
 }
 
 #ifdef FEAT_EVAL
@@ -6205,6 +6337,10 @@ set_context_in_set_cmd(
 	    else
 		xp->xp_backslash = XP_BS_ONE;
 	}
+	else if (p == (char_u *)&p_ft)
+	{
+	    xp->xp_context = EXPAND_FILETYPE;
+	}
 	else
 	{
 	    xp->xp_context = EXPAND_FILES;
@@ -6275,8 +6411,7 @@ ExpandSettings(
 	regmatch->rm_ic = ic;
 	if (xp->xp_context != EXPAND_BOOL_SETTINGS)
 	{
-	    for (match = 0; match < (int)(sizeof(names) / sizeof(char *));
-								      ++match)
+	    for (match = 0; match < (int)ARRAY_LENGTH(names); ++match)
 		if (vim_regexec(regmatch, (char_u *)names[match], (colnr_T)0))
 		{
 		    if (loop == 0)
@@ -6996,3 +7131,22 @@ fill_culopt_flags(char_u *val, win_T *wp)
     return OK;
 }
 #endif
+
+/*
+ * Get the value of 'magic' adjusted for Vim9 script.
+ */
+    int
+magic_isset(void)
+{
+    switch (magic_overruled)
+    {
+	case OPTION_MAGIC_ON:      return TRUE;
+	case OPTION_MAGIC_OFF:     return FALSE;
+	case OPTION_MAGIC_NOT_SET: break;
+    }
+#ifdef FEAT_EVAL
+    if (in_vim9script())
+	return TRUE;
+#endif
+    return p_magic;
+}

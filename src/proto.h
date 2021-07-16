@@ -90,6 +90,7 @@ extern int _stricoll(char *a, char *b);
 # include "fileio.pro"
 # include "filepath.pro"
 # include "findfile.pro"
+# include "float.pro"
 # include "fold.pro"
 # include "getchar.pro"
 # include "gui_xim.pro"
@@ -210,6 +211,7 @@ void mbyte_im_set_active(int active_arg);
 # include "spell.pro"
 # include "spellfile.pro"
 # include "spellsuggest.pro"
+# include "strings.pro"
 # include "syntax.pro"
 # include "tag.pro"
 # include "term.pro"
@@ -233,10 +235,10 @@ void mbyte_im_set_active(int active_arg);
 # include "usercmd.pro"
 # include "userfunc.pro"
 # include "version.pro"
+# include "vim9script.pro"
 # ifdef FEAT_EVAL
 #  include "vim9compile.pro"
 #  include "vim9execute.pro"
-#  include "vim9script.pro"
 #  include "vim9type.pro"
 # endif
 # include "window.pro"

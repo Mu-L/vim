@@ -130,10 +130,11 @@ StringToChars(PyObject *obj, PyObject **todecref)
     {
 	PyObject	*bytes;
 
-	if (!(bytes = PyUnicode_AsEncodedString(obj, ENC_OPT, NULL)))
+	if (!(bytes = PyUnicode_AsEncodedString(obj, ENC_OPT,
+							   ERRORS_ENCODE_ARG)))
 	    return NULL;
 
-	if(PyBytes_AsStringAndSize(bytes, (char **) &str, NULL) == -1
+	if (PyBytes_AsStringAndSize(bytes, (char **) &str, NULL) == -1
 		|| str == NULL)
 	{
 	    Py_DECREF(bytes);
@@ -2814,6 +2815,7 @@ typedef struct
 ListIterDestruct(listiterinfo_T *lii)
 {
     list_rem_watch(lii->list, &lii->lw);
+    list_unref(lii->list);
     PyMem_Free(lii);
 }
 
@@ -2849,6 +2851,7 @@ ListIter(ListObject *self)
     list_add_watch(l, &lii->lw);
     lii->lw.lw_item = l->lv_first;
     lii->list = l;
+    ++l->lv_refcount;
 
     return IterNew(lii,
 	    (destructorfun) ListIterDestruct, (nextfun) ListIterNext,
@@ -4243,7 +4246,8 @@ StringToLine(PyObject *obj)
     }
     else if (PyUnicode_Check(obj))
     {
-	if (!(bytes = PyUnicode_AsEncodedString(obj, ENC_OPT, NULL)))
+	if (!(bytes = PyUnicode_AsEncodedString(obj, ENC_OPT,
+							   ERRORS_ENCODE_ARG)))
 	    return NULL;
 
 	if (PyBytes_AsStringAndSize(bytes, &str, &len) == -1
@@ -6290,11 +6294,11 @@ _ConvertFromPyObject(PyObject *obj, typval_T *tv, PyObject *lookup_dict)
 	PyObject	*bytes;
 	char_u	*str;
 
-	bytes = PyUnicode_AsEncodedString(obj, ENC_OPT, NULL);
+	bytes = PyUnicode_AsEncodedString(obj, ENC_OPT, ERRORS_ENCODE_ARG);
 	if (bytes == NULL)
 	    return -1;
 
-	if(PyBytes_AsStringAndSize(bytes, (char **) &str, NULL) == -1)
+	if (PyBytes_AsStringAndSize(bytes, (char **) &str, NULL) == -1)
 	    return -1;
 	if (str == NULL)
 	    return -1;
@@ -6421,6 +6425,7 @@ ConvertToPyObject(typval_T *tv)
 	case VAR_VOID:
 	case VAR_CHANNEL:
 	case VAR_JOB:
+	case VAR_INSTR:
 	    Py_INCREF(Py_None);
 	    return Py_None;
 	case VAR_BOOL:
