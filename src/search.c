@@ -439,7 +439,7 @@ ignorecase(char_u *pat)
 }
 
 /*
- * As ignorecase() put pass the "ic" and "scs" flags.
+ * As ignorecase() but pass the "ic" and "scs" flags.
  */
     int
 ignorecase_opt(char_u *pat, int ic_in, int scs)
@@ -3291,12 +3291,9 @@ update_search_stat(
 	       || (dirc == '/' && LT_POS(p, lastpos)));
 
     // If anything relevant changed the count has to be recomputed.
-    // MB_STRNICMP ignores case, but we should not ignore case.
-    // Unfortunately, there is no MB_STRNICMP function.
-    // XXX: above comment should be "no MB_STRCMP function" ?
     if (!(chgtick == CHANGEDTICK(curbuf)
 	&& (lastpat != NULL
-	    && MB_STRNICMP(lastpat, spats[last_idx].pat, lastpatlen) == 0
+	    && STRNCMP(lastpat, spats[last_idx].pat, lastpatlen) == 0
 	    && lastpatlen == spats[last_idx].patlen
 	)
 	&& EQUAL_POS(lastpos, *cursor_pos)
@@ -5344,7 +5341,8 @@ search_for_fuzzy_match(
     if (whole_line && start_pos->lnum != pos->lnum)
 	current_pos.lnum += dir;
 
-    do {
+    do
+    {
 
 	// Check if looped around and back to start position
 	if (looped_around && EQUAL_POS(current_pos, circly_end))
